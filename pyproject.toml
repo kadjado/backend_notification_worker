@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+
+[project]
+name = "scdip-pnlp"
+version = "0.1.0"
+dependencies = [
+    "fastapi[standard]",
+    "SQLAlchemy",
+    "alembic",
+    "psycopg[binary]",
+    "pydantic-settings",
+    "PyJWT",
+    "pwdlib[argon2]",
+    "python-multipart",
+    "email-validator",
+    "python-dotenv",
+    "python-dotenv",
+    "firebase-admin"
+]
+
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+exclude = [
+    "backups*",
+    "migrations*",
+    "backup_avant_verrouillage*",
+    "verification_correctif_superviseur_fs*",
+    "verification_correctif_superviseur_fs_v2*",
+    "verification_correctif_superviseur_fs_v3*",
+    "tests*",
+    "_patch_notifications*"
+]

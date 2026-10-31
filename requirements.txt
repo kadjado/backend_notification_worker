@@ -1,0 +1,11 @@
+﻿fastapi[standard]
+uvicorn[standard]
+sqlalchemy
+psycopg[binary]
+alembic
+pydantic-settings
+firebase-admin
+pwdlib[argon2]
+PyJWT
+
+httpx
