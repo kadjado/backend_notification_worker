@@ -1,7 +1,8 @@
 """Worker indépendant pour les livraisons WhatsApp et Push de SCDIP."""
-
+import os
 import logging
 import signal
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -31,13 +32,6 @@ class ErreurHTTPMeta(RuntimeError):
         self.status_code = status_code
         super().__init__(f"Erreur API Meta HTTP {status_code}.")
 
-stop_requested = False
-
-
-def request_stop(signum, frame):
-    global stop_requested
-    stop_requested = True
-
 
 def canaux_configures() -> set[str]:
     """Retourne les canaux dont la configuration est disponible."""
@@ -55,8 +49,11 @@ def canaux_configures() -> set[str]:
         )
 
     chemin_firebase = settings.firebase_service_account_path
-    if chemin_firebase.is_file():
+    secret_firebase = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON_BASE64")
+
+    if secret_firebase or chemin_firebase.is_file():
         canaux.update({"web_push", "android_push"})
+        logger.info("Configuration Firebase détectée : Push activé.")
     else:
         logger.warning(
             "Push désactivé : compte de service Firebase introuvable (%s).",
@@ -440,7 +437,10 @@ def traiter_livraison(
     )
 
 
-def main() -> int:
+
+def run_worker(stop_event: threading.Event) -> int:
+    """Exécute le worker jusqu'à la demande d'arrêt."""
+
     canaux = canaux_configures()
 
     if not canaux:
@@ -449,93 +449,122 @@ def main() -> int:
         )
         return 2
 
-    signal.signal(signal.SIGINT, request_stop)
-
-    if hasattr(signal, "SIGTERM"):
-        signal.signal(signal.SIGTERM, request_stop)
-
-    # Garder cette connexion ouverte : le verrou est lié à la session SQL.
-    with engine.connect() as verrou:
-        obtenu = verrou.execute(
-            text("SELECT pg_try_advisory_lock(:lock_id)"),
-            {"lock_id": ADVISORY_LOCK_ID},
-        ).scalar()
-
-        verrou.commit()
-
-        if not obtenu:
-            logger.error("Une autre instance du worker est déjà active.")
-            return 3
-
+    while not stop_event.is_set():
         try:
-            # Les livraisons interrompues ne sont pas renvoyées aveuglément :
-            # le fournisseur a peut-être déjà accepté l'envoi.
-            with SessionLocal() as db:
-                db.execute(
-                    text(
-                        "UPDATE livraisons_notifications "
-                        "SET statut = 'echec', "
-                        "derniere_erreur = "
-                        "'Interruption du worker : résultat incertain ; "
-                        "vérification manuelle requise.', "
-                        "prochaine_tentative = now() "
-                        "WHERE statut = 'en_cours'"
-                    )
-                )
-                db.commit()
+            # Le verrou reste détenu tant que le worker traite les livraisons.
+            with engine.connect() as verrou:
+                obtenu = verrou.execute(
+                    text("SELECT pg_try_advisory_lock(:lock_id)"),
+                    {"lock_id": ADVISORY_LOCK_ID},
+                ).scalar()
 
-            logger.info(
-                "Worker démarré. Canaux actifs : %s",
-                ", ".join(sorted(canaux)),
+                verrou.commit()
+
+                if obtenu:
+                    try:
+                        # Récupération des livraisons interrompues.
+                        with SessionLocal() as db:
+                            db.execute(
+                                text(
+                                    "UPDATE livraisons_notifications "
+                                    "SET statut = 'echec', "
+                                    "derniere_erreur = "
+                                    "'Interruption du worker : résultat incertain ; "
+                                    "vérification manuelle requise.', "
+                                    "prochaine_tentative = now() "
+                                    "WHERE statut = 'en_cours'"
+                                )
+                            )
+                            db.commit()
+
+                        logger.info(
+                            "Worker démarré. Canaux actifs : %s",
+                            ", ".join(sorted(canaux)),
+                        )
+
+                        while not stop_event.is_set():
+                            lot = recuperer_livraisons(canaux)
+
+                            if not lot:
+                                stop_event.wait(POLL_SECONDS)
+                                continue
+
+                            for (
+                                livraison_id,
+                                canal,
+                                destinataire,
+                                tentative,
+                                contenu,
+                            ) in lot:
+                                if stop_event.is_set():
+                                    break
+
+                                try:
+                                    traiter_livraison(
+                                        livraison_id,
+                                        canal,
+                                        destinataire,
+                                        tentative,
+                                        contenu,
+                                    )
+                                except Exception:
+                                    logger.exception(
+                                        "Erreur locale sur la livraison %s.",
+                                        livraison_id,
+                                    )
+
+                        logger.info("Arrêt du worker demandé.")
+
+                    finally:
+                        try:
+                            verrou.execute(
+                                text(
+                                    "SELECT pg_advisory_unlock(:lock_id)"
+                                ),
+                                {"lock_id": ADVISORY_LOCK_ID},
+                            )
+                            verrou.commit()
+                        except Exception:
+                            logger.exception(
+                                "Impossible de libérer le verrou proprement."
+                            )
+
+                    return 0
+
+                logger.info(
+                    "Une autre instance détient le verrou du worker. "
+                    "Nouvelle tentative dans %s secondes.",
+                    POLL_SECONDS,
+                )
+
+        except Exception:
+            logger.exception(
+                "Erreur du worker. Nouvelle tentative dans %s secondes.",
+                POLL_SECONDS,
             )
 
-            while not stop_requested:
-                lot = recuperer_livraisons(canaux)
+        stop_event.wait(POLL_SECONDS)
 
-                if not lot:
-                    time.sleep(POLL_SECONDS)
-                    continue
+    logger.info("Worker arrêté.")
+    return 0
 
-                for (
-                    livraison_id,
-                    canal,
-                    destinataire,
-                    tentative,
-                    contenu,
-                ) in lot:
-                    if stop_requested:
-                        break
 
-                    try:
-                        traiter_livraison(
-                            livraison_id,
-                            canal,
-                            destinataire,
-                            tentative,
-                            contenu,
-                        )
-                    except Exception:
-                        logger.exception(
-                            "Erreur locale sur la livraison %s.",
-                            livraison_id,
-                        )
+def main() -> int:
+    """Point d'entrée autonome du worker."""
 
-            logger.info("Arrêt du worker demandé.")
-            return 0
+    stop_event = threading.Event()
 
-        finally:
-            try:
-                verrou.execute(
-                    text("SELECT pg_advisory_unlock(:lock_id)"),
-                    {"lock_id": ADVISORY_LOCK_ID},
-                )
-                verrou.commit()
-            except Exception:
-                logger.exception(
-                    "Impossible de libérer le verrou proprement."
-                )
+    def demander_arret(signum, frame):
+        logger.info("Signal d'arrêt reçu.")
+        stop_event.set()
+
+    signal.signal(signal.SIGINT, demander_arret)
+
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, demander_arret)
+
+    return run_worker(stop_event)
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

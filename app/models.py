@@ -1,4 +1,4 @@
-
+﻿
 import uuid
 from datetime import date, datetime, timezone
 
@@ -8,7 +8,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import Uuid
-
+from datetime import timedelta
 
 class Base(DeclarativeBase):
     pass
@@ -515,4 +515,51 @@ class AppareilPush(Base):
     )
     mis_a_jour_le: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=now_utc, nullable=False
+    )
+
+class RefreshToken(Base):
+    __tablename__ = "refresh_tokens"
+    __table_args__ = (
+        UniqueConstraint(
+            "token_hash",
+            name="uq_refresh_tokens_token_hash",
+        ),
+        Index(
+            "ix_refresh_tokens_utilisateur_expiration",
+            "utilisateur_id",
+            "expires_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    utilisateur_id: Mapped[int] = mapped_column(
+        ForeignKey("utilisateurs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    token_hash: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+    )
+
+    cree_le: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=now_utc,
+        nullable=False,
+    )
+
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+    revoque_le: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    remplace_par_hash: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
     )

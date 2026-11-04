@@ -20,3 +20,8 @@ class LoginResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: AuthenticatedUser
+
+
+class TokenRefreshResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"

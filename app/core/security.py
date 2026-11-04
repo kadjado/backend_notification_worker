@@ -1,4 +1,6 @@
-﻿from datetime import datetime, timedelta, timezone
+﻿import hashlib
+import secrets
+from datetime import datetime, timedelta, timezone
 
 import jwt
 from pwdlib import PasswordHash
@@ -52,3 +54,13 @@ def decode_access_token(token: str) -> dict:
         algorithms=[settings.jwt_algorithm],
         options={"require": ["sub", "exp"]},
     )
+
+
+def create_refresh_token() -> str:
+    """Génère un refresh token cryptographiquement aléatoire."""
+    return secrets.token_urlsafe(64)
+
+
+def hash_refresh_token(token: str) -> str:
+    """Retourne le hash SHA-256 d'un refresh token."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()

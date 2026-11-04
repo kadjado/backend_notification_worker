@@ -1,11 +1,11 @@
-﻿import getpass
+﻿import os
+import getpass
 
 from sqlalchemy import func, select
 
 from app.core.security import hash_password
 from app.db.session import SessionLocal
 from app.models import Utilisateur
-
 
 def demander_texte(message: str) -> str:
     while True:

@@ -66,10 +66,9 @@ def notifier_superviseurs_pour_fiche(
 
     # Aucun d?tail du patient ni num?ro de fiche dans les messages externes.
     contenu_externe = {
-        "titre": "Nouvelle fiche ? valider",
+        "titre": "Fiche Paludisme ",
         "message": (
-            "Une nouvelle fiche n?cessite votre attention. "
-            "Connectez-vous ? SCDIP pour la consulter."
+            "Une nouvelle fiche est en attente de validation"
         ),
     }
 

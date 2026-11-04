@@ -247,7 +247,7 @@ def list_formations_sanitaires(
     commune_id: int | None = None,
     actif: bool | None = None,
     offset: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=500),
+    limit: int = Query(3000, ge=1, le=3000),
     db: Session = Depends(get_db),
 ):
     query = select(FormationSanitaire)

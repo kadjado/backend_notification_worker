@@ -37,7 +37,7 @@ admin_only = require_roles("administrateur_national")
 
 
 def normaliser_perimetre(db: Session, role: str, scope: dict) -> dict:
-    """Valide le rattachement territorial selon le rÃ´le de l'utilisateur."""
+    """Valide et normalise le rattachement territorial selon le rôle."""
 
     region_id = scope.get("region_id")
     prefecture_id = scope.get("prefecture_id")
@@ -48,7 +48,7 @@ def normaliser_perimetre(db: Session, role: str, scope: dict) -> dict:
         if fourni is not None and fourni != attendu:
             raise HTTPException(
                 status_code=422,
-                detail=f"Le champ '{champ}' ne correspond pas Ã  la structure sÃ©lectionnÃ©e.",
+                detail=f"Le champ '{champ}' ne correspond pas à la structure sélectionnée.",
             )
 
     def resultat(fs=None, commune=None, prefecture=None, region=None):
@@ -66,7 +66,7 @@ def normaliser_perimetre(db: Session, role: str, scope: dict) -> dict:
         if formation_id is None:
             raise HTTPException(
                 status_code=422,
-                detail="Un agent FS doit Ãªtre rattachÃ© Ã  une formation sanitaire.",
+                detail="Un agent FS doit être rattaché à une formation sanitaire.",
             )
 
         fs = db.get(FormationSanitaire, formation_id)
@@ -77,8 +77,16 @@ def normaliser_perimetre(db: Session, role: str, scope: dict) -> dict:
             )
 
         commune = db.get(Commune, fs.commune_id)
+        if commune is None:
+            raise HTTPException(status_code=422, detail="Commune de la FS introuvable.")
+
         prefecture = db.get(Prefecture, commune.prefecture_id)
+        if prefecture is None:
+            raise HTTPException(status_code=422, detail="Préfecture de la FS introuvable.")
+
         region = db.get(Region, prefecture.region_id)
+        if region is None:
+            raise HTTPException(status_code=422, detail="Région de la FS introuvable.")
 
         verifier_parent("commune_id", commune_id, commune.id)
         verifier_parent("prefecture_id", prefecture_id, prefecture.id)
@@ -88,32 +96,30 @@ def normaliser_perimetre(db: Session, role: str, scope: dict) -> dict:
 
     if role == "superviseur":
         if formation_id is not None:
-            if any(value is not None for value in (commune_id, prefecture_id, region_id)):
-                raise HTTPException(
-                    status_code=422,
-                    detail="Un superviseur affectÃ© Ã  une FS ne peut pas conserver un pÃ©rimÃ¨tre territorial.",
-                )
             fs = db.get(FormationSanitaire, formation_id)
+
             if fs is None or not fs.actif:
                 raise HTTPException(
                     status_code=422,
                     detail="Formation sanitaire introuvable ou inactive.",
                 )
+
+            # Les valeurs territoriales saisies sont volontairement ignorées.
             return resultat(fs=fs.id)
 
-        # CompatibilitÃ© temporaire : les anciens comptes territoriaux
-        # peuvent encore consulter leur pÃ©rimÃ¨tre, mais ne valident plus.
-        # Les nouveaux comptes superviseur doivent obligatoirement Ãªtre affectÃ©s Ã  une FS.
+        # Compatibilité avec les anciens superviseurs territoriaux.
         if commune_id is not None:
             commune = db.get(Commune, commune_id)
             if commune is None:
-                raise HTTPException(
-                    status_code=422,
-                    detail="Commune introuvable.",
-                )
+                raise HTTPException(status_code=422, detail="Commune introuvable.")
 
             prefecture = db.get(Prefecture, commune.prefecture_id)
+            if prefecture is None:
+                raise HTTPException(status_code=422, detail="Préfecture introuvable.")
+
             region = db.get(Region, prefecture.region_id)
+            if region is None:
+                raise HTTPException(status_code=422, detail="Région introuvable.")
 
             verifier_parent("prefecture_id", prefecture_id, prefecture.id)
             verifier_parent("region_id", region_id, region.id)
@@ -127,12 +133,12 @@ def normaliser_perimetre(db: Session, role: str, scope: dict) -> dict:
         if prefecture_id is not None:
             prefecture = db.get(Prefecture, prefecture_id)
             if prefecture is None:
-                raise HTTPException(
-                    status_code=422,
-                    detail="PrÃ©fecture introuvable.",
-                )
+                raise HTTPException(status_code=422, detail="Préfecture introuvable.")
 
             region = db.get(Region, prefecture.region_id)
+            if region is None:
+                raise HTTPException(status_code=422, detail="Région introuvable.")
+
             verifier_parent("region_id", region_id, region.id)
 
             return resultat(
@@ -142,21 +148,15 @@ def normaliser_perimetre(db: Session, role: str, scope: dict) -> dict:
 
         if region_id is not None:
             if db.get(Region, region_id) is None:
-                raise HTTPException(
-                    status_code=422,
-                    detail="RÃ©gion introuvable.",
-                )
+                raise HTTPException(status_code=422, detail="Région introuvable.")
+
             return resultat(region=region_id)
 
-        # Un superviseur sans affectation peut exister aprÃ¨s un retrait explicite.
-        # Il ne voit aucune fiche et ne peut donc ni valider ni traiter de correction.
-        # La crÃ©ation d'un nouveau superviseur reste protÃ©gÃ©e par create_user,
-        # qui exige une formation sanitaire.
         return resultat()
 
     raise HTTPException(
         status_code=422,
-        detail="RÃ´le utilisateur non reconnu.",
+        detail="Rôle utilisateur non reconnu.",
     )
 
 
@@ -183,18 +183,24 @@ def create_user(
     db: Session = Depends(get_db),
     current_user: Utilisateur = Depends(admin_only),
 ) -> AdminUserResponse:
+    
     email = data.email.strip().lower()
 
+    # Vérifier si l'adresse email existe déjà
     existing = db.scalar(
-        select(Utilisateur.id).where(Utilisateur.email == email)
+        select(Utilisateur.id).where(
+            Utilisateur.email == email
+        )
     )
+
     if existing is not None:
         raise HTTPException(
             status_code=409,
-            detail="Cette adresse email est dÃ©jÃ  utilisÃ©e.",
+            detail="Cette adresse email est déjà utilisée.",
         )
 
-        existing_telephone = db.scalar(
+    # Vérifier si le numéro de téléphone existe déjà
+    existing_telephone = db.scalar(
         select(Utilisateur.id).where(
             Utilisateur.telephone == data.telephone
         )
@@ -203,9 +209,11 @@ def create_user(
     if existing_telephone is not None:
         raise HTTPException(
             status_code=409,
-            detail="Ce numÃ©ro de tÃ©lÃ©phone est dÃ©jÃ  utilisÃ©.",
+            detail="Ce numéro de téléphone est déjà utilisé.",
         )
-        
+
+#--------------------------------------------------------------------------------------------
+
     user_data = data.model_dump(exclude={"password"})
     user_data["email"] = email
     user_data["password_hash"] = hash_password(data.password)

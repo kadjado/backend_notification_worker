@@ -1,4 +1,8 @@
 
+import base64
+import binascii
+import json
+import os
 from pathlib import Path
 
 import firebase_admin
@@ -10,21 +14,46 @@ from app.core.config import settings
 def obtenir_application_firebase():
     """
     Initialise Firebase Admin une seule fois.
-    Ne réalise aucun envoi de notification.
+
+    Priorité :
+    1. Variable d'environnement FIREBASE_SERVICE_ACCOUNT_JSON_BASE64
+    2. Fichier local firebase-service-account.json
     """
     try:
         return firebase_admin.get_app()
     except ValueError:
         pass
 
-    chemin = Path(settings.firebase_service_account_path)
+    secret_base64 = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON_BASE64")
 
-    if not chemin.is_file():
-        raise FileNotFoundError(
-            f"Fichier de configuration Firebase introuvable : {chemin}"
-        )
+    if secret_base64:
+        try:
+            contenu_json = base64.b64decode(
+                secret_base64,
+                validate=True,
+            ).decode("utf-8")
 
-    identification = credentials.Certificate(str(chemin))
+            identification_json = json.loads(contenu_json)
+
+            identification = credentials.Certificate(identification_json)
+
+        except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError) as erreur:
+            raise ValueError(
+                "La variable FIREBASE_SERVICE_ACCOUNT_JSON_BASE64 "
+                "ne contient pas un JSON Firebase Base64 valide."
+            ) from erreur
+
+    else:
+        chemin = Path(settings.firebase_service_account_path)
+
+        if not chemin.is_file():
+            raise FileNotFoundError(
+                f"Configuration Firebase introuvable : {chemin}. "
+                "Définissez FIREBASE_SERVICE_ACCOUNT_JSON_BASE64 "
+                "ou fournissez le fichier de service Firebase."
+            )
+
+        identification = credentials.Certificate(str(chemin))
 
     return firebase_admin.initialize_app(identification)
 
@@ -35,6 +64,7 @@ def verifier_firebase() -> str:
     """
     application = obtenir_application_firebase()
     return application.project_id
+
 
 def envoyer_notification_push(
     *,
